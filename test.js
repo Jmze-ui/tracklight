@@ -3,8 +3,8 @@ const fs = require('fs');
 const html = fs.readFileSync(__dirname + '/index.html', 'utf8');
 const core = html.match(/<script type="text\/plain" id="core">([\s\S]*?)<\/script>/)[1];
 const { parseMod, ModReplayer, makeDemo, TABLES, applyOp, writeMod, decodeWav, toSample8, encodeWav8,
-  noteIndex, patSetNote, patSetNibble, patClearField, patClear, patCopy, patPaste, patShift, patTranspose, cellOff, computeLength, pickNext, spectrumBands, meterLevel, mergePrefs, PREF_DEFAULTS, THEMES, midiNoteIndex, midiTarget, orderRegion, regionSpan, swingTemplate, grooveTemplate, grooveMultipliers, parseSteps, fileKind, sortEntries, sampleNameFromFile, decodeIff8svx, encodeIff8svx, decodeSample, placeCard, bytesToB64, b64ToBytes, makeProject, readProject, sanitizeProjectState, projectFileName, buildPlayerHtml } =
-  new Function(core + '; return { parseMod, ModReplayer, makeDemo, TABLES, applyOp, writeMod, decodeWav, toSample8, encodeWav8, noteIndex, patSetNote, patSetNibble, patClearField, patClear, patCopy, patPaste, patShift, patTranspose, cellOff, computeLength, pickNext, spectrumBands, meterLevel, mergePrefs, PREF_DEFAULTS, THEMES, midiNoteIndex, midiTarget, orderRegion, regionSpan, swingTemplate, grooveTemplate, grooveMultipliers, parseSteps, fileKind, sortEntries, sampleNameFromFile, decodeIff8svx, encodeIff8svx, decodeSample, placeCard, bytesToB64, b64ToBytes, makeProject, readProject, sanitizeProjectState, projectFileName, buildPlayerHtml };')();
+  noteIndex, patSetNote, patSetNibble, patClearField, patClear, patCopy, patPaste, patShift, patTranspose, cellOff, computeLength, pickNext, spectrumBands, meterLevel, mergePrefs, PREF_DEFAULTS, THEMES, midiNoteIndex, midiTarget, orderRegion, regionSpan, swingTemplate, grooveTemplate, grooveMultipliers, parseSteps, fileKind, sortEntries, sampleNameFromFile, decodeIff8svx, encodeIff8svx, decodeSample, placeCard, PT_PERIOD_TABLE, bytesToB64, b64ToBytes, makeProject, readProject, sanitizeProjectState, projectFileName, buildPlayerHtml } =
+  new Function(core + '; return { parseMod, ModReplayer, makeDemo, TABLES, PT_PERIOD_TABLE, applyOp, writeMod, decodeWav, toSample8, encodeWav8, noteIndex, patSetNote, patSetNibble, patClearField, patClear, patCopy, patPaste, patShift, patTranspose, cellOff, computeLength, pickNext, spectrumBands, meterLevel, mergePrefs, PREF_DEFAULTS, THEMES, midiNoteIndex, midiTarget, orderRegion, regionSpan, swingTemplate, grooveTemplate, grooveMultipliers, parseSteps, fileKind, sortEntries, sampleNameFromFile, decodeIff8svx, encodeIff8svx, decodeSample, placeCard, bytesToB64, b64ToBytes, makeProject, readProject, sanitizeProjectState, projectFileName, buildPlayerHtml };')();
 
 let fail = 0;
 const ok = (c, msg) => { console.log((c ? 'PASS ' : 'FAIL ') + msg); if (!c) fail = 1; };
@@ -556,6 +556,21 @@ ok(Math.abs(a500.a1 - (1 - Math.exp(-2 * Math.PI * 4421 / 44100))) < 1e-12, 'the
   m = quiet(); put(m, 0, 0, { idx: 14, smp: 5 }); put(m, 1, 0, { idx: 12, smp: 4, cmd: 14, par: 0xD3 });
   r = new ModReplayer(m, 44100); ticks(r, 7);
   ok(r.ch[0].pend && r.ch[0].pend.data.length === bass.length && r.ch[0].smp === 3, 'a delayed note loads its sample number on tick 0 but waits to play it');
+}
+
+// ProTracker's period table (data from the pt2-clone source): internal consistency and a few well-known anchor values
+{
+  const rowOf = ft => TABLES[ft + 8];
+  ok(TABLES.length === 16 && TABLES.every(r => r.length === 36), 'there are 16 finetune rows of 36 notes');
+  ok(TABLES.every(r => r.every((v, i) => i === 0 || v < r[i - 1]) && r[0] > 0 && r[35] > 0), 'every finetune row falls strictly from low to high notes');
+  ok(Array.from(rowOf(0)).join() === '856,808,762,720,678,640,604,570,538,508,480,453,428,404,381,360,339,320,302,285,269,254,240,226,214,202,190,180,170,160,151,143,135,127,120,113', 'finetune 0 is the standard ProTracker table');
+  ok(rowOf(-8).slice(1).every((v, i) => v === rowOf(0)[i]), 'finetune -8 is finetune 0 shifted down one semitone');
+  ok(rowOf(1)[0] === 850 && rowOf(7)[0] === 814 && rowOf(-1)[0] === 862 && rowOf(-8)[0] === 907, 'the first note of the finetune rows is 850, 814, 862 and 907 for +1, +7, -1 and -8');
+  ok(TABLES.every((r, i) => i === 0 || r.every((v, k) => Math.abs(v - Math.round(rowOf(0)[k] * Math.pow(2, -(i - 8) / 96))) <= 2)), 'no entry is more than 2 away from the pure finetune formula');
+  ok(rowOf(-2)[29] === 163 && rowOf(0)[29] === 160, 'F-3 is period 160 at finetune 0 and 163 at finetune -2 (the pure formula gives 162)');
+  ok(PT_PERIOD_TABLE.length === 16 * 37 + 15 && PT_PERIOD_TABLE.filter((v, i) => i < 592 && i % 37 === 36).every(v => v === 0), 'the full table has a 0 after each row and the 15 words that follow it in memory');
+  const base = rowOf(0), finerows = [1, 2, 3, 4, 5, 6, 7, -8, -7, -6, -5, -4, -3, -2, -1].map(ft => rowOf(ft));
+  ok(finerows.every(r => r.every((v, k) => v <= (k > 0 ? base[k - 1] : 907) + 1 && v >= (k < 35 ? base[k + 1] : 107) - 1)), 'every finetuned period lies between the notes a semitone above and below its finetune-0 note');
 }
 
 process.exit(fail);

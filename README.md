@@ -39,8 +39,9 @@ Chrome and Edge give the full feature set. Firefox plays and edits everything, b
 
 ## Known limits
 
-- Playback follows ProTracker 2.3 behaviour but is not bit-exact with real Paula hardware. The finetune period table is calculated, so a few values can differ by 1 from the original table.
-- Several ProTracker quirks are implemented and tested, taken from the written descriptions of [OpenMPT's MOD test cases](https://wiki.openmpt.org/Development:_Test_Cases/MOD): deferred sample changes, tone-portamento targets, `E9x` retriggers, tempo timing, pattern-delay repeats, `Bxx`/`Dxx` order and arpeggio past the period table. Not yet covered: finetune clamping limits, `E5x` finetune edge cases, `EDx` notes delayed past the row, and the sample-offset quirks.
+- Playback follows ProTracker 2.3 behaviour but is not bit-exact with real Paula hardware. The A500 output filter is a 4421 Hz low-pass, and the finetune period table is ProTracker's own (checked against the pt2-clone source).
+- Several ProTracker quirks are implemented and tested, taken from the written descriptions of [OpenMPT's MOD test cases](https://wiki.openmpt.org/Development:_Test_Cases/MOD): deferred sample changes, tone-portamento targets, `E9x` retriggers, tempo timing, pattern-delay repeats, `Bxx`/`Dxx` order and arpeggio past the period table.
+- Those test modules carry recordings of real ProTracker output. Measured against them, `PatternDelaysRetrig`, `PTSwapNoLoop`, `TempoChange`, `InstrDelay` and `PTRetrigger` now match closely (correlation 0.90 to 0.99). `VibratoReset`, `DelayBreak`, `ArpWraparound` and `finetune` do not match yet, and why is not understood. Also not covered: finetune clamping limits, `EDx` notes delayed past the row, and the sample-offset quirks.
 - `E3` (glissando), `EF` (invert loop) and `8xx` (pan) are ignored, as in plain ProTracker. `FLT8` modules and compressed (Fibonacci) 8SVX samples are not supported.
 - MED, XM, S3M and IT formats are not supported.
 - Browsers hold audio until the first click, so you may need to press Play once.
