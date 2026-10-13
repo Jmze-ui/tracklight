@@ -3375,7 +3375,7 @@ registerProcessor('tl', TLProc);`;
 
   // ---------- launcher (tracklight.cmd): open the file given on the command line, and ping so the server knows the window is open ----------
   (function launcher() {
-    if (!/^https?:$/.test(location.protocol)) return;
+    if (!/^https?:$/.test(location.protocol) || !/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) return;   // the launcher only ever lives on localhost
     const open = new URLSearchParams(location.search).get('open');
     if (open && open.startsWith('/__open/')) {
       fetch(open).then(r => r.ok ? r.arrayBuffer() : null).then(async buf => {
@@ -3387,7 +3387,10 @@ registerProcessor('tl', TLProc);`;
         if (ctx && ctx.state !== 'running') { send({ t: 'pause' }); setPlaying(false); $('status').textContent = 'Press Play to start the sound.'; }   // browsers hold audio until a click
       }).catch(() => {});
     }
-    setInterval(() => { fetch('/__ping', { cache: 'no-store' }).catch(() => {}); }, 4000);
+    // only ping a launcher that is really there; on a static host (GitHub Pages, python -m http.server) there is nothing to tell
+    fetch('/__tracklight', { cache: 'no-store' }).then(r => r.ok ? r.text() : '').then(t => {
+      if (t === 'tracklight') setInterval(() => { fetch('/__ping', { cache: 'no-store' }).catch(() => {}); }, 4000);
+    }).catch(() => {});
   })();
 })();
 </script>
