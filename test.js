@@ -453,4 +453,109 @@ ok(Math.abs(gainAt(4421) - Math.SQRT1_2) < 0.06, 'the A500 filter is about -3 dB
 ok(gainAt(400) > 0.98 && gainAt(8842) < 0.5 && gainAt(8842) > 0.35, 'the A500 filter passes bass and falls about 6 dB per octave above the corner (gain at 8842 Hz ' + gainAt(8842).toFixed(3) + ')');
 ok(Math.abs(a500.a1 - (1 - Math.exp(-2 * Math.PI * 4421 / 44100))) < 1e-12, 'the filter uses the 4421 Hz coefficient');
 
+// ProTracker 2.3 behaviours documented in OpenMPT's MOD test cases (https://wiki.openmpt.org/Development:_Test_Cases/MOD).
+// The modules here are built from those written descriptions, not copied from OpenMPT's files.
+{
+  const quiet = () => { const m = parseMod(makeDemo()); m.patterns.forEach(p => p.fill(0)); return m; };   // demo samples: 1-3 one-shots, 4 and 5 looped
+  const put = (m, row, ch, o) => {
+    const d = m.patterns[m.orders[0]];
+    if (o.idx !== undefined) patSetNote(d, 4, row, ch, o.idx, o.smp || 0);
+    else if (o.smp) { patSetNibble(d, 4, row, ch, 1, o.smp >> 4); patSetNibble(d, 4, row, ch, 2, o.smp & 15); }
+    if (o.cmd !== undefined) { patSetNibble(d, 4, row, ch, 3, o.cmd); patSetNibble(d, 4, row, ch, 4, (o.par || 0) >> 4); patSetNibble(d, 4, row, ch, 5, (o.par || 0) & 15); }
+  };
+  const ticks = (r, n) => { for (let i = 0; i < n; i++) r.stepTick(); };   // row k starts on tick 6k+1 at the default speed of 6
+  const frames = (r, n) => { const a = new Float32Array(n); r.render(a, new Float32Array(n), n); };
+
+  // PatternJump.mod: Bxx cancels a Dxx to its left
+  let m = quiet(); put(m, 0, 0, { cmd: 13, par: 0x10 }); put(m, 0, 1, { cmd: 11, par: 2 });
+  let r = new ModReplayer(m, 44100); ticks(r, 6);
+  ok(r.order === 2 && r.row === 0, 'a Bxx to the right of a Dxx cancels the break row: the jump lands on row 0 of order 2 (order ' + r.order + ' row ' + r.row + ')');
+  m = quiet(); put(m, 0, 0, { cmd: 11, par: 2 }); put(m, 0, 1, { cmd: 13, par: 0x10 });
+  r = new ModReplayer(m, 44100); ticks(r, 6);
+  ok(r.order === 2 && r.row === 10, 'a Dxx to the right of a Bxx still sets the row in the jumped-to pattern (order ' + r.order + ' row ' + r.row + ')');
+
+  // PortaTarget.mod: reaching the target clears it
+  m = quiet(); put(m, 0, 0, { idx: 12, smp: 4 }); put(m, 1, 0, { idx: 14, smp: 0, cmd: 3, par: 0x40 });
+  r = new ModReplayer(m, 44100); ticks(r, 7);
+  const pc = r.ch[0];
+  ok(pc.target === TABLES[8][14] && pc.period === TABLES[8][12], 'a note beside 3xx sets the slide target without retriggering');
+  ticks(r, 1);
+  ok(pc.period === TABLES[8][14] && pc.target === 0, 'the slide stops on the target and forgets it');
+  pc.period = 400; ticks(r, 1);
+  ok(pc.period === 400, 'a later 3xx does not slide back to a target that was already reached');
+
+  // PTRetrigger.mod: E9x retriggers on tick 0 of a row with no note
+  m = quiet(); put(m, 0, 0, { idx: 12, smp: 4 }); put(m, 1, 0, { cmd: 14, par: 0x93 });
+  r = new ModReplayer(m, 44100); ticks(r, 1); r.ch[0].pos = 30; ticks(r, 5); ticks(r, 1);
+  ok(r.ch[0].pos === 0, 'E93 on a row without a note retriggers the sample on tick 0');
+  m = quiet(); put(m, 0, 0, { idx: 12, smp: 4 }); put(m, 1, 0, { cmd: 14, par: 0x90 });
+  r = new ModReplayer(m, 44100); ticks(r, 1); r.ch[0].pos = 30; ticks(r, 6);
+  ok(r.ch[0].pos === 30, 'E90 does not retrigger');
+  m = quiet(); put(m, 0, 0, { idx: 12, smp: 4 }); put(m, 1, 0, { cmd: 14, par: 0x93 });
+  r = new ModReplayer(m, 44100); ticks(r, 7); r.ch[0].pos = 30; ticks(r, 2);   // tick 2 of the row: 2 % 3 != 0, no retrigger yet
+  ok(r.ch[0].pos === 30, 'between multiples of the interval nothing retriggers');
+  ticks(r, 1);
+  ok(r.ch[0].pos === 0, 'it retriggers again on tick 3 (tick modulo interval = 0)');
+
+  // TempoChange.mod: the new tempo starts after the tick it is set on
+  m = quiet(); put(m, 0, 0, { cmd: 15, par: 250 });
+  r = new ModReplayer(m, 44100); r.speed = 1;
+  const starts = []; let fr = 0; const rd = r.readRow.bind(r);
+  r.readRow = () => { starts.push(fr / 44100); rd(); };
+  while (starts.length < 3) { frames(r, 64); fr += 64; }
+  ok(Math.abs(starts[1] - starts[0] - 0.02) < 0.003 && Math.abs(starts[2] - starts[1] - 0.01) < 0.003, 'with one tick per row the row that sets tempo 250 still lasts 20 ms; the next lasts 10 ms (' + (starts[1] - starts[0]).toFixed(3) + ', ' + (starts[2] - starts[1]).toFixed(3) + ' s)');
+  m = quiet(); put(m, 0, 0, { cmd: 15, par: 250 }); put(m, 0, 1, { cmd: 15, par: 1 });
+  const cl = computeLength(m);
+  ok(Math.abs(cl.times[1] - 0.02) < 1e-9 && Math.abs(cl.times[2] - 0.03) < 1e-9, 'the length calculation applies the same rule, so seek times match playback (' + cl.times[1] + ', ' + cl.times[2] + ')');
+
+  // PatternDelaysRetrig.mod: fine slides and note delays run on every repeat of a delayed row
+  m = quiet(); put(m, 0, 0, { idx: 12, smp: 4 }); put(m, 1, 0, { cmd: 14, par: 0x12 }); put(m, 1, 1, { cmd: 14, par: 0xE2 });
+  r = new ModReplayer(m, 44100); let guard = 0; while (r.row < 2 && guard++ < 60) r.stepTick();
+  ok(r.ch[0].period === 428 - 6, 'a fine slide up by 2 on a row repeated three times by EE2 slides 6 in total (period ' + r.ch[0].period + ')');
+  m = quiet(); put(m, 1, 0, { idx: 12, smp: 4, cmd: 14, par: 0xD2 }); put(m, 1, 1, { cmd: 14, par: 0xE1 });
+  r = new ModReplayer(m, 44100); let trigs = 0; const tg = r.trig.bind(r); r.trig = (...a) => { trigs++; return tg(...a); };
+  guard = 0; while (r.row < 2 && guard++ < 60) r.stepTick();
+  ok(trigs === 2, 'a delayed note on a row repeated once by EE1 is triggered on each repetition (' + trigs + ' triggers)');
+
+  // ArpWraparound.mod: arpeggio past the end of the period table
+  m = quiet(); put(m, 0, 0, { idx: 35, smp: 4, cmd: 0, par: 0x12 });
+  r = new ModReplayer(m, 44100); ticks(r, 2);
+  ok(r.ch[0].outPeriod === 0 && r.ch[0].step < 0.002, 'an arpeggio step one past the last note plays period 0, which the hardware treats as 65536 (very low)');
+  ticks(r, 1);
+  ok(r.ch[0].outPeriod === TABLES[9][0], 'the next step wraps into the following finetune row (period ' + r.ch[0].outPeriod + ')');
+  ticks(r, 1);
+  ok(r.ch[0].outPeriod === TABLES[8][35], 'tick 3 is back on the base note');
+
+  // PortaSmpChange.mod / PTInstrSwap.mod / InstrDelay.mod / PTStoppedSwap.mod / PTSwapNoLoop.mod: deferred sample changes
+  const bass = parseMod(makeDemo()).samples[3].data, lead = parseMod(makeDemo()).samples[4].data;
+  m = quiet(); put(m, 0, 0, { idx: 12, smp: 4 }); put(m, 1, 0, { smp: 5 });
+  r = new ModReplayer(m, 44100); ticks(r, 7);
+  ok(r.ch[0].smp === 4 && r.ch[0].data.length === bass.length && r.ch[0].pend && r.ch[0].pend.data.length === lead.length, 'a sample number without a note does not switch sample at once: the old one keeps playing and the new one waits');
+  guard = 0; while (r.ch[0].pend && guard++ < 400) frames(r, 16);
+  ok(!r.ch[0].pend && r.ch[0].data.length === lead.length && r.ch[0].looped && r.ch[0].pos < 8, 'the new sample takes over at the end of the old loop, starting at its loop start');
+  frames(r, 2000);
+  ok(r.ch[0].active && r.ch[0].pos >= r.ch[0].ls && r.ch[0].pos < r.ch[0].le, 'and then keeps looping inside its own loop');
+  m = quiet(); put(m, 0, 0, { idx: 12, smp: 4 }); put(m, 1, 0, { smp: 3 });
+  r = new ModReplayer(m, 44100); ticks(r, 7); guard = 0; while (r.ch[0].active && guard++ < 400) frames(r, 16);
+  ok(!r.ch[0].active, 'swapping to a sample that does not loop makes the channel stop at the end of the current loop');
+  m = quiet(); put(m, 0, 0, { idx: 12, smp: 3 }); put(m, 1, 0, { smp: 5 });
+  r = new ModReplayer(m, 44100); r.speed = 31; ticks(r, 1);
+  guard = 0; while (r.ch[0].active && guard++ < 2000) frames(r, 16);
+  ok(!r.ch[0].active && r.ch[0].dma, 'a one-shot sample runs out but the channel stays alive');
+  guard = 0; while (!(r.row >= 1 && r.counter >= 1) && guard++ < 4000) frames(r, 64);   // the row counter moves on one tick before the row is read
+  ok(r.ch[0].active && r.ch[0].data.length === lead.length && r.ch[0].pos >= 0 && r.ch[0].pos < r.ch[0].le, 'a looped sample swapped in after the old one has stopped starts playing straight away');
+  m = quiet(); put(m, 0, 0, { smp: 5 });
+  r = new ModReplayer(m, 44100); ticks(r, 1);
+  ok(!r.ch[0].active && !r.ch[0].dma, 'a sample number on a channel that never played does not start anything');
+  m = quiet(); put(m, 0, 0, { idx: 12, smp: 4 }); put(m, 1, 0, { smp: 5 }); put(m, 2, 0, { idx: 12, smp: 4 });
+  r = new ModReplayer(m, 44100); ticks(r, 7); const waiting = !!r.ch[0].pend; ticks(r, 6);
+  ok(waiting && r.ch[0].pend === null && r.ch[0].data.length === bass.length && r.ch[0].pos === 0, 'a new note cancels a waiting swap and plays its own sample');
+  m = quiet(); put(m, 0, 0, { idx: 12, smp: 4 }); put(m, 1, 0, { idx: 14, smp: 5, cmd: 3, par: 0x10 });
+  r = new ModReplayer(m, 44100); ticks(r, 7);
+  ok(r.ch[0].data.length === bass.length && r.ch[0].pend && r.ch[0].pend.data.length === lead.length, 'a note with a sample number beside a tone portamento queues the sample and slides the old one');
+  m = quiet(); put(m, 0, 0, { idx: 14, smp: 5 }); put(m, 1, 0, { idx: 12, smp: 4, cmd: 14, par: 0xD3 });
+  r = new ModReplayer(m, 44100); ticks(r, 7);
+  ok(r.ch[0].pend && r.ch[0].pend.data.length === bass.length && r.ch[0].smp === 3, 'a delayed note loads its sample number on tick 0 but waits to play it');
+}
+
 process.exit(fail);

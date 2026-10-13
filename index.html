@@ -1030,7 +1030,8 @@ function computeLength(mod, groove) {
       if (Number.isNaN(times[k])) { times[k] = t; speeds[k] = r.speed; tempos[k] = r.tempo; }
     }
     const mul = groove ? groove[r.row & 15] : 1;
-    r.stepTick(); t += 2.5 / r.tempo * mul;
+    const tempoNow = r.tempo;
+    r.stepTick(); t += 2.5 / tempoNow * mul;
   }
   // visited rows in play order, for the tempo map and each order's played length
   const keys = [];
@@ -1444,7 +1445,7 @@ class ModReplayer {
       smp: -1, data: null, len: 0, ls: 0, le: 0, looped: false, pos: 0, active: false, step: 0,
       period: 0, outPeriod: 0, vol: 0, outVol: 0, ft: 0, noteIdx: -1, target: 0, portaSpeed: 0,
       vibPos: 0, vibSpeed: 0, vibDepth: 0, vibWave: 0, tremPos: 0, tremSpeed: 0, tremDepth: 0, tremWave: 0,
-      sampOff: 0, loopRow: 0, loopCount: 0, cmd: 0, param: 0, delayNote: -1, lvl: 0
+      sampOff: 0, loopRow: 0, loopCount: 0, cmd: 0, param: 0, delayNote: -1, rowNote: -1, pend: null, dma: false, lvl: 0
     }));
   }
   setPos(order, row, speed, tempo) {
@@ -1454,11 +1455,12 @@ class ModReplayer {
     this.counter = 0; this.tickLeft = 0; this.repeat = false; this.patDelay = 0;
     this.posJump = this.breakRow = this.loopJump = -1;
     this.ended = false; this.visited = new Set([this.order * 64 + this.row]);
-    this.ch.forEach(h => { h.active = false; h.loopCount = 0; });
+    this.ch.forEach(h => { h.active = false; h.loopCount = 0; h.pend = null; h.dma = false; });
   }
 
   trig(h, idx, startPos) {
     const s = this.mod.samples[h.smp];
+    h.pend = null; h.dma = true;
     if (!s || !s.len) { h.active = false; return; }
     h.data = s.data; h.len = s.len; h.ls = s.ls; h.le = s.le; h.looped = s.looped;
     h.noteIdx = idx; h.period = TABLES[h.ft + 8][idx]; h.outPeriod = h.period;
@@ -1466,6 +1468,28 @@ class ModReplayer {
     h.active = h.pos < h.len;
     if (!(h.vibWave & 4)) h.vibPos = 0;
     if (!(h.tremWave & 4)) h.tremPos = 0;
+  }
+
+  // A sample number without a retriggering note: the new sample is used once the current sample or loop ends.
+  // A channel that already ran out (DMA still on, playing the silent dummy loop) picks up a looped sample straight away.
+  queueSwap(h, s) {
+    if (!h.active && h.dma) {
+      if (s.looped && s.len) { h.data = s.data; h.len = s.len; h.ls = s.ls; h.le = s.le; h.looped = true; h.pos = s.ls; h.active = true; }
+      h.pend = null;
+    } else h.pend = s;
+  }
+  swapAtEnd(h) {
+    const s = h.pend;
+    h.pend = null;
+    if (!s || !s.looped || !s.len) { h.active = false; return h.len; }
+    h.data = s.data; h.len = s.len; h.ls = s.ls; h.le = s.le; h.looped = true;
+    return s.ls;
+  }
+  advancePos(h) {
+    let p = h.pos + h.step;
+    if (h.looped) { if (p >= h.le) p = h.pend ? this.swapAtEnd(h) : h.ls + (p - h.ls) % (h.le - h.ls); }
+    else if (p >= h.len) { if (h.pend) p = this.swapAtEnd(h); else h.active = false; }
+    h.pos = p;
   }
 
   readRow() {
@@ -1480,21 +1504,25 @@ class ModReplayer {
       let cmd = pat[o + 2] & 15, param = pat[o + 3];
       if (st) [cmd, param] = stCommand(cmd, param);
       const x = param >> 4, y = param & 15;
-      h.cmd = cmd; h.param = param; h.delayNote = -1;
-      if (samp && samp <= 31) { const s = m.samples[samp - 1]; h.smp = samp - 1; h.vol = s.vol; h.ft = s.finetune; }
+      h.cmd = cmd; h.param = param; h.delayNote = -1; h.rowNote = period ? noteIndex(period) : -1;
+      let newSample = null;
+      if (samp && samp <= 31) { const s = m.samples[samp - 1]; h.smp = samp - 1; h.vol = s.vol; h.ft = s.finetune; newSample = s; }
       if (cmd === 14 && x === 5) { h.ft = y > 7 ? y - 16 : y; }
       if (cmd === 9 && param) h.sampOff = param;
+      let retrig = false;
       if (period) {
         const idx = noteIndex(period);
         if (cmd === 3 || cmd === 5) h.target = TABLES[h.ft + 8][idx];
         else if (cmd === 14 && x === 13 && y > 0) h.delayNote = idx;
-        else this.trig(h, idx, cmd === 9 ? h.sampOff * 256 : 0);
+        else { this.trig(h, idx, cmd === 9 ? h.sampOff * 256 : 0); retrig = true; }
       }
+      if (newSample && !retrig) this.queueSwap(h, newSample);
       switch (cmd) {
         case 3: if (param) h.portaSpeed = param; break;
         case 4: if (x) h.vibSpeed = x; if (y) h.vibDepth = y; break;
         case 7: if (x) h.tremSpeed = x; if (y) h.tremDepth = y; break;
-        case 11: this.posJump = param; break;
+        case 11: this.posJump = param; this.breakRow = -1; break;   // Bxx cancels a Dxx on a channel to its left
+
         case 12: h.vol = Math.min(64, param); break;
         case 13: this.breakRow = x * 10 + y > 63 ? 0 : x * 10 + y; break;
         case 15:
@@ -1507,6 +1535,7 @@ class ModReplayer {
             case 1: h.period = Math.max(113, h.period - y); break;
             case 2: h.period = Math.min(856, h.period + y); break;
             case 4: h.vibWave = y; break;
+            case 9: if (y > 0 && !period && h.noteIdx >= 0) this.trig(h, h.noteIdx, 0); break;
             case 6:
               if (y === 0) h.loopRow = this.row;
               else {
@@ -1526,6 +1555,18 @@ class ModReplayer {
     }
   }
 
+  repeatRow() {
+    for (const h of this.ch) {
+      if (h.cmd !== 14) continue;
+      const x = h.param >> 4, y = h.param & 15;
+      if (x === 1) h.period = Math.max(113, h.period - y);
+      else if (x === 2) h.period = Math.min(856, h.period + y);
+      else if (x === 10) h.vol = Math.min(64, h.vol + y);
+      else if (x === 11) h.vol = Math.max(0, h.vol - y);
+      else if (x === 13 && y > 0) h.delayNote = h.rowNote;
+    }
+  }
+
   tickFx() {
     const k = this.counter;
     for (const h of this.ch) {
@@ -1535,7 +1576,7 @@ class ModReplayer {
         case 0:
           if (p && h.noteIdx >= 0) {
             const st = k % 3;
-            if (st) h.outPeriod = TABLES[h.ft + 8][Math.min(35, h.noteIdx + (st === 1 ? x : y))];
+            if (st) h.outPeriod = this.arpPeriod(h, st === 1 ? x : y);
           }
           break;
         case 1: h.period = Math.max(113, h.period - p); h.outPeriod = h.period; break;
@@ -1555,10 +1596,20 @@ class ModReplayer {
       if (c !== 7) h.outVol = h.vol;
     }
   }
+  // ProTracker reads the period table straight on: after the 36 notes comes a 0, then the next finetune row
+  arpPeriod(h, add) {
+    const i = h.noteIdx + add;
+    if (i < 36) return TABLES[h.ft + 8][i];
+    const pos = i % 37;
+    if (pos === 36) return 0;
+    const row = ((h.ft < 0 ? h.ft + 16 : h.ft) + Math.floor(i / 37)) % 16;
+    return TABLES[(row < 8 ? row : row - 16) + 8][pos];
+  }
   porta(h) {
     if (h.target && h.period !== h.target) {
       h.period = h.period > h.target ? Math.max(h.target, h.period - h.portaSpeed)
                                      : Math.min(h.target, h.period + h.portaSpeed);
+      if (h.period === h.target) h.target = 0;     // reached: a later 3xx does not slide back to it
     }
     h.outPeriod = h.period;
   }
@@ -1605,8 +1656,9 @@ class ModReplayer {
 
   stepTick() {
     this.tickMul = this.groove[this.row & 15];
-    if (this.counter === 0 && !this.repeat) this.readRow(); else this.tickFx();
-    for (const h of this.ch) h.step = PAL_CLOCK / (Math.max(113, h.outPeriod) * this.rate);
+    if (this.counter === 0 && !this.repeat) this.readRow();
+    else { if (this.counter === 0) this.repeatRow(); this.tickFx(); }
+    for (const h of this.ch) h.step = PAL_CLOCK / (h.outPeriod === 0 ? 65536 : Math.max(113, h.outPeriod)) / this.rate;   // period 0 plays as 65536
     if (++this.counter >= this.speed) { this.counter = 0; this.advance(); }
   }
 
@@ -1614,7 +1666,7 @@ class ModReplayer {
     const ch = this.ch, nch = this.nch, rate = this.rate;
     for (let i = 0; i < n; i++) {
       if (this.ended && !this.loop) { L[i] = 0; R[i] = 0; continue; }
-      if (this.tickLeft <= 0) { this.stepTick(); this.tickLeft += rate * 2.5 / this.tempo * this.tickMul; }
+      if (this.tickLeft <= 0) { const tempoNow = this.tempo; this.stepTick(); this.tickLeft += rate * 2.5 / tempoNow * this.tickMul; }
       this.tickLeft--;
       let l = 0, r = 0;
       for (let c = 0; c < nch; c++) {
@@ -1629,15 +1681,8 @@ class ModReplayer {
             s += (d[i1] - s) * (p - ip);
           }
           s *= h.outVol / 8192;
-          p += h.step;
-          if (h.looped) { if (p >= h.le) p = h.ls + (p - h.ls) % (h.le - h.ls); }
-          else if (p >= h.len) h.active = false;
-          h.pos = p;
-        } else if (h.active) {
-          h.pos += h.step;
-          if (h.looped) { if (h.pos >= h.le) h.pos = h.ls + (h.pos - h.ls) % (h.le - h.ls); }
-          else if (h.pos >= h.len) h.active = false;
-        }
+          this.advancePos(h);
+        } else if (h.active) this.advancePos(h);
         const a = s < 0 ? -s : s;
         if (a > h.lvl) h.lvl = a;
         this.ring[c][this.rp] = s;
