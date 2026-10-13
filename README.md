@@ -4,9 +4,11 @@ A tracker module (`.mod`) player and editor that runs in the browser. One HTML f
 
 It plays 4 to 32 channel ProTracker-style modules and the older 15-sample NoiseTracker and Soundtracker files, with a pattern editor, a sample editor, a playlist, project files, and an export that turns a song into a self-contained player page.
 
+**Try it in your browser: <https://jmze-ui.github.io/tracklight/>** (press Demo, or drop a `.mod` file on the page). Nothing is uploaded; everything runs locally in your browser.
+
 ## Run it
 
-You need [Node.js](https://nodejs.org/) 18 or newer. Nothing else is installed.
+To run it on your own machine you need [Node.js](https://nodejs.org/) 18 or newer. Nothing else is installed.
 
 ```bash
 node serve.js                  # start a local server and open a window
@@ -38,6 +40,7 @@ Chrome and Edge give the full feature set. Firefox plays and edits everything, b
 ## Known limits
 
 - Playback follows ProTracker 2.3 behaviour but is not bit-exact with real Paula hardware. The finetune period table is calculated, so a few values can differ by 1 from the original table.
+- Several ProTracker quirks are implemented and tested, taken from the written descriptions of [OpenMPT's MOD test cases](https://wiki.openmpt.org/Development:_Test_Cases/MOD): deferred sample changes, tone-portamento targets, `E9x` retriggers, tempo timing, pattern-delay repeats, `Bxx`/`Dxx` order and arpeggio past the period table. Not yet covered: finetune clamping limits, `E5x` finetune edge cases, `EDx` notes delayed past the row, and the sample-offset quirks.
 - `E3` (glissando), `EF` (invert loop) and `8xx` (pan) are ignored, as in plain ProTracker. `FLT8` modules and compressed (Fibonacci) 8SVX samples are not supported.
 - MED, XM, S3M and IT formats are not supported.
 - Browsers hold audio until the first click, so you may need to press Play once.
