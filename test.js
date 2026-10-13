@@ -440,4 +440,17 @@ ok(JSON.parse(evilBlocks[2][2]).credit === evil && JSON.parse(evilBlocks[2][2]).
 ok(/<title>&lt;\/script&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;&lt;!-- \$&amp; \$1 \{\{CORE\}\} &quot;quoted&quot;<\/title>/.test(evilHtml), 'the page title is HTML-escaped and special replacement patterns stay literal');
 ok(!/<script>\s*alert/.test(evilHtml) && !evilHtml.includes('<!--'), 'no injected script or comment opener reaches the page');
 
+// A500 output filter: a 6 dB/octave low-pass at 1/(2*pi*360 ohm*0.1 uF) = 4421 Hz
+const a500 = new ModReplayer(parseMod(makeDemo()), 44100);
+const hardwareHz = 1 / (2 * Math.PI * 360 * 0.1e-6);
+const gainAt = (hz) => {            // steady-state gain of the replayer's own one-pole filter at a given frequency
+  let y = 0, peak = 0;
+  for (let i = 0; i < 44100; i++) { y += a500.a1 * (Math.sin(2 * Math.PI * hz * i / 44100) - y); if (i > 20000) peak = Math.max(peak, Math.abs(y)); }
+  return peak;
+};
+ok(Math.abs(hardwareHz - 4421) < 1, 'the A500 filter corner works out to 4421 Hz from R=360 ohm and C=0.1 uF');
+ok(Math.abs(gainAt(4421) - Math.SQRT1_2) < 0.06, 'the A500 filter is about -3 dB at 4421 Hz (gain ' + gainAt(4421).toFixed(3) + ')');
+ok(gainAt(400) > 0.98 && gainAt(8842) < 0.5 && gainAt(8842) > 0.35, 'the A500 filter passes bass and falls about 6 dB per octave above the corner (gain at 8842 Hz ' + gainAt(8842).toFixed(3) + ')');
+ok(Math.abs(a500.a1 - (1 - Math.exp(-2 * Math.PI * 4421 / 44100))) < 1e-12, 'the filter uses the 4421 Hz coefficient');
+
 process.exit(fail);

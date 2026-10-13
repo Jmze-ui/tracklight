@@ -1420,7 +1420,8 @@ class ModReplayer {
     this.rp = 0;
     this.setSep(0.4);
     this.fl = [0, 0]; this.fl2 = [0, 0]; this.led = false;
-    this.a1 = 1 - Math.exp(-2 * Math.PI * 4900 / rate);
+    // A500 output stage: 6 dB/octave low-pass of R=360 ohm, C=0.1 uF = 1 / (2 pi R C), about 4421 Hz
+    this.a1 = 1 - Math.exp(-2 * Math.PI * 4421 / rate);
     this.a2 = 1 - Math.exp(-2 * Math.PI * 3300 / rate);
     this.reset();
   }
